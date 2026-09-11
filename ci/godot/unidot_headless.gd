@@ -12,6 +12,9 @@ func _run() -> void:
 		return
 
 	var importer = IMPORTER.new()
+	var fbx2gltf := OS.get_environment("FBX2GLTF_PATH")
+	if not fbx2gltf.is_empty():
+		importer.new_editor_plugin.get_editor_interface().get_editor_settings().set_setting("filesystem/import/fbx/fbx2gltf_path", fbx2gltf)
 	importer._show_importer_common()
 	importer._selected_package(ProjectSettings.globalize_path(UNITY_ASSETS))
 
