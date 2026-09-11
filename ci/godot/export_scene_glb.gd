@@ -1,36 +1,34 @@
-@tool
-extends EditorScript
+extends SceneTree
 
-func _run() -> void:
-	var loop: SceneTree = Engine.get_main_loop() as SceneTree
-	if loop == null:
-		push_error("No SceneTree available.")
-		return
+func _init() -> void:
+	call_deferred("_export")
 
+func _export() -> void:
 	var scene_path := OS.get_environment("GRANNY_SCENE")
 	if scene_path.is_empty():
 		scene_path = find_scene("res://", "Scene.tscn")
 	if scene_path.is_empty():
 		push_error("Could not find converted Scene.tscn.")
-		loop.quit(1)
+		quit(1)
 		return
 
 	print("Exporting: ", scene_path)
-	var packed: PackedScene = load(scene_path)
+	var packed := load(scene_path) as PackedScene
 	if packed == null:
 		push_error("Failed to load scene: " + scene_path)
-		loop.quit(1)
+		quit(1)
 		return
 
 	var root := packed.instantiate()
 	if root == null:
 		push_error("Failed to instantiate scene: " + scene_path)
-		loop.quit(1)
+		quit(1)
 		return
+	root.name = "GrannyMap"
 
 	# Let imported resources finish resolving before serializing the scene.
-	await loop.process_frame
-	await loop.process_frame
+	await process_frame
+	await process_frame
 
 	var document := GLTFDocument.new()
 	var state := GLTFState.new()
@@ -39,7 +37,7 @@ func _run() -> void:
 	if err != OK:
 		push_error("GLTF append failed: " + error_string(err))
 		root.free()
-		loop.quit(1)
+		quit(1)
 		return
 
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://output"))
@@ -48,12 +46,12 @@ func _run() -> void:
 	if err != OK:
 		push_error("GLB write failed: " + error_string(err))
 		root.free()
-		loop.quit(1)
+		quit(1)
 		return
 
 	print("GLB_EXPORT_COMPLETE: ", ProjectSettings.globalize_path(out_path))
 	root.free()
-	loop.quit(0)
+	quit(0)
 
 func find_scene(path: String, filename: String) -> String:
 	var dir := DirAccess.open(path)
