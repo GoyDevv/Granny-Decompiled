@@ -1,0 +1,128 @@
+name: Export Granny map GLB
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'Assets/**'
+      - 'ProjectSettings/**'
+      - 'Packages/**'
+      - 'ci/**'
+      - '.github/workflows/export-glb.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  glb:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      GODOT_CONVERT_VERSION: 4.2.2
+      GODOT_FINAL_VERSION: 4.7.2
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y unzip rsync
+
+      - name: Download Godot 4.2.2
+        run: |
+          curl -L --fail --retry 3 -o /tmp/godot-convert.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_CONVERT_VERSION}-stable/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot-convert.zip -d /opt/godot-convert
+          chmod +x /opt/godot-convert/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64
+          ln -sf /opt/godot-convert/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot-convert
+
+      - name: Download Godot 4.7.2
+        run: |
+          curl -L --fail --retry 3 -o /tmp/godot-final.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_FINAL_VERSION}-stable/Godot_v${GODOT_FINAL_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot-final.zip -d /opt/godot-final
+          chmod +x /opt/godot-final/Godot_v${GODOT_FINAL_VERSION}-stable_linux.x86_64
+          ln -sf /opt/godot-final/Godot_v${GODOT_FINAL_VERSION}-stable_linux.x86_64 /usr/local/bin/godot
+
+      - name: Download FBX2glTF for Unidot
+        run: |
+          mkdir -p conversion/tools/fbx2gltf
+          curl -L --fail --retry 3 -o /tmp/fbx2gltf.zip \
+            https://github.com/godotengine/FBX2glTF/releases/download/v0.13.1/FBX2glTF-linux-x86_64.zip
+          unzip -q /tmp/fbx2gltf.zip -d conversion/tools/fbx2gltf
+          FBX_BIN="$(find conversion/tools/fbx2gltf -type f \( -name 'FBX2glTF-linux-x86_64' -o -name 'FBX2glTF' \) | head -1)"
+          test -n "$FBX_BIN"
+          chmod +x "$FBX_BIN"
+          echo "FBX2GLTF_PATH=$(realpath "$FBX_BIN")" >> "$GITHUB_ENV"
+
+      - name: Prepare temporary Godot project
+        run: |
+          mkdir -p conversion/UnitySource
+          rsync -a --delete Assets/ conversion/UnitySource/Assets/
+          git clone --depth 1 https://github.com/V-Sekai/unidot_importer.git conversion/addons/unidot_importer
+          cat > conversion/project.godot <<'EOF'
+          config_version=5
+
+          [application]
+          config/name="Granny Godot Port"
+          config/features=PackedStringArray("4.2", "GL Compatibility")
+
+          [editor_plugins]
+          enabled=PackedStringArray("res://addons/unidot_importer/plugin.cfg")
+
+          [rendering]
+          renderer/rendering_method="gl_compatibility"
+          renderer/rendering_method.mobile="gl_compatibility"
+          EOF
+          cp ci/godot/unidot_headless.gd conversion/ci_unidot_headless.gd
+
+      - name: Convert Unity source to Godot resources
+        working-directory: conversion
+        env:
+          FBX2GLTF_PATH: ${{ env.FBX2GLTF_PATH }}
+        run: godot-convert --headless --editor --path . --script ci_unidot_headless.gd
+
+      - name: Find gameplay scene
+        id: scene
+        run: |
+          SCENE="$(find conversion -type f -path '*Scene/1_Scenes/Scene.tscn' | head -1 || true)"
+          if [ -z "$SCENE" ]; then SCENE="$(find conversion -type f -name 'Scene.tscn' | head -1 || true)"; fi
+          test -n "$SCENE"
+          echo "path=${SCENE#conversion/}" >> "$GITHUB_OUTPUT"
+
+      - name: Upgrade project with Godot 4.7.2
+        working-directory: conversion
+        run: godot --headless --editor --path . --quit-after 20
+
+      - name: Export GLB
+        working-directory: conversion
+        env:
+          GRANNY_SCENE: res://${{ steps.scene.outputs.path }}
+        run: |
+          cp ../ci/godot/export_scene_glb.gd ci_export_scene_glb.gd
+          godot --headless --editor --path . --script ci_export_scene_glb.gd
+          test -s output/granny_map.glb
+          ls -lh output/granny_map.glb
+
+      - name: Upload map GLB
+        uses: actions/upload-artifact@v4
+        with:
+          name: granny-map-glb
+          path: conversion/output/granny_map.glb
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload converted Godot scene project
+        run: |
+          rm -rf conversion/.godot conversion/tools/fbx2gltf
+          tar -czf /tmp/granny-godot-with-glb.tar.gz -C conversion .
+
+      - name: Upload converted project too
+        uses: actions/upload-artifact@v4
+        with:
+          name: granny-godot-4.7-with-glb
+          path: /tmp/granny-godot-with-glb.tar.gz
+          if-no-files-found: error
+          retention-days: 14
