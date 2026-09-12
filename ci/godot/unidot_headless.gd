@@ -28,11 +28,15 @@ func _run() -> void:
 		quit(1)
 		return
 
+	# Preserve as much of the Unity project as Unidot can represent.
 	importer.asset_database.use_text_resources = true
 	importer.asset_database.use_text_scenes = true
 	importer.asset_database.enable_unidot_keys = true
 	importer.asset_database.add_unsupported_components = true
 	importer.asset_database.auto_select_dependencies = true
+	# Use the explicit FBX -> glTF path instead of relying on the importer default.
+	# This is important for skinned characters and complex environment meshes.
+	importer.asset_database.convert_fbx_to_gltf = true
 
 	while importer._meta_work_count > 0 and Time.get_ticks_msec() < deadline:
 		await process_frame
