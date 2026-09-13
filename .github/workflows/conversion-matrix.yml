@@ -1,0 +1,236 @@
+name: Compare Unity to Godot conversion pipelines
+
+on:
+  push:
+    branches:
+      - master
+      - 'ci/**'
+    paths:
+      - 'Assets/**'
+      - 'ProjectSettings/**'
+      - 'Packages/**'
+      - 'ci/**'
+      - '.github/workflows/conversion-matrix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# This workflow is deliberately a comparison bench, not a replacement for the
+# existing exporter. Each job produces an independently named artifact.
+#
+# Pipelines:
+#   1. unidot-direct       : current source -> Unidot -> Godot
+#   2. assetripper-unidot  : source -> AssetRipper CLI -> Unity assets -> Unidot -> Godot
+#   3. unitypy-baseline    : UnityPy -> raw meshes/textures (ground truth-ish baseline)
+#
+# AssetRipper CLI is an experimental third-party CLI wrapper around AssetRipper.
+# It is kept separate so its result cannot silently become the canonical build.
+
+jobs:
+  audit:
+    name: Audit Unity GUID graph
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Run GUID and source-file audit
+        run: |
+          python3 ci/conversion/audit_unity_refs.py --assets Assets --out conversion/audit || true
+      - name: Upload audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: conversion-audit
+          path: conversion/audit
+          if-no-files-found: error
+          retention-days: 14
+
+  unidot-direct:
+    name: Direct Unidot
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    needs: audit
+    env:
+      GODOT_CONVERT_VERSION: 4.2.2
+      GODOT_FINAL_VERSION: 4.7.2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y unzip rsync
+      - name: Download Godot conversion editor
+        run: |
+          curl -L --fail --retry 3 -o /tmp/godot-convert.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_CONVERT_VERSION}-stable/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot-convert.zip -d /opt/godot-convert
+          chmod +x /opt/godot-convert/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64
+          ln -sf /opt/godot-convert/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot-convert
+      - name: Download Godot final editor
+        run: |
+          curl -L --fail --retry 3 -o /tmp/godot-final.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_FINAL_VERSION}-stable/Godot_v${GODOT_FINAL_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot-final.zip -d /opt/godot-final
+          chmod +x /opt/godot-final/Godot_v${GODOT_FINAL_VERSION}-stable_linux.x86_64
+          ln -sf /opt/godot-final/Godot_v${GODOT_FINAL_VERSION}-stable_linux.x86_64 /usr/local/bin/godot
+      - name: Download FBX2glTF
+        run: |
+          mkdir -p conversion/tools/fbx2gltf
+          curl -L --fail --retry 3 -o /tmp/fbx2gltf.zip \
+            https://github.com/godotengine/FBX2glTF/releases/download/v0.13.1/FBX2glTF-linux-x86_64.zip
+          unzip -q /tmp/fbx2gltf.zip -d conversion/tools/fbx2gltf
+          FBX_BIN="$(find conversion/tools/fbx2gltf -type f \( -name 'FBX2glTF-linux-x86_64' -o -name 'FBX2glTF' \) | head -1)"
+          test -n "$FBX_BIN"
+          chmod +x "$FBX_BIN"
+          echo "FBX2GLTF_PATH=$(realpath "$FBX_BIN")" >> "$GITHUB_ENV"
+      - name: Prepare Unidot project
+        run: |
+          mkdir -p conversion/UnitySource
+          rsync -a --delete Assets/ conversion/UnitySource/Assets/
+          git clone --depth 1 https://github.com/V-Sekai/unidot_importer.git conversion/addons/unidot_importer
+          cat > conversion/project.godot <<'EOF'
+          config_version=5
+          [application]
+          config/name="Granny Conversion Bench - Direct Unidot"
+          config/features=PackedStringArray("4.2", "GL Compatibility")
+          [editor_plugins]
+          enabled=PackedStringArray("res://addons/unidot_importer/plugin.cfg")
+          [rendering]
+          renderer/rendering_method="gl_compatibility"
+          renderer/rendering_method.mobile="gl_compatibility"
+          EOF
+          cp ci/godot/unidot_headless.gd conversion/ci_unidot_headless.gd
+      - name: Run Unidot
+        working-directory: conversion
+        env:
+          FBX2GLTF_PATH: ${{ env.FBX2GLTF_PATH }}
+        run: godot-convert --headless --editor --path . --script ci_unidot_headless.gd
+      - name: Upgrade with final Godot
+        working-directory: conversion
+        run: godot --headless --editor --path . --quit-after 20
+      - name: Package direct result
+        run: |
+          rm -rf conversion/.godot conversion/tools/fbx2gltf
+          tar -czf /tmp/granny-direct-unidot.tar.gz -C conversion .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conversion-direct-unidot
+          path: /tmp/granny-direct-unidot.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  assetripper-unidot:
+    name: AssetRipper -> Unidot
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    needs: audit
+    env:
+      GODOT_CONVERT_VERSION: 4.2.2
+      GODOT_FINAL_VERSION: 4.7.2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y unzip rsync dotnet-sdk-8.0 jq
+      - name: Build AssetRipper CLI wrapper
+        run: |
+          git clone --depth 1 https://github.com/LiveGobe/AssetRipper.CLI.git /tmp/assetripper-cli
+          dotnet build /tmp/assetripper-cli -c Release -o /tmp/assetripper-bin
+      - name: Locate AssetRipper executable
+        run: |
+          BIN="$(find /tmp/assetripper-bin -maxdepth 2 -type f -name 'AssetRipper*' -executable | head -1 || true)"
+          test -n "$BIN"
+          echo "ASSET_RIPPER=$BIN" >> "$GITHUB_ENV"
+      - name: Rebuild a normalized Unity project with AssetRipper
+        run: |
+          mkdir -p conversion/assetripper
+          "$ASSET_RIPPER" --cli -i "$PWD" -o "$PWD/conversion/assetripper" --mode Unity --disable-script-import true
+          find conversion/assetripper -maxdepth 4 -type d -name Assets -print
+      - name: Download Godot conversion editor
+        run: |
+          curl -L --fail --retry 3 -o /tmp/godot-convert.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_CONVERT_VERSION}-stable/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot-convert.zip -d /opt/godot-convert
+          chmod +x /opt/godot-convert/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64
+          ln -sf /opt/godot-convert/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot-convert
+      - name: Download Godot final editor
+        run: |
+          curl -L --fail --retry 3 -o /tmp/godot-final.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_FINAL_VERSION}-stable/Godot_v${GODOT_FINAL_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot-final.zip -d /opt/godot-final
+          chmod +x /opt/godot-final/Godot_v${GODOT_FINAL_VERSION}-stable_linux.x86_64
+          ln -sf /opt/godot-final/Godot_v${GODOT_FINAL_VERSION}-stable_linux.x86_64 /usr/local/bin/godot
+      - name: Download FBX2glTF
+        run: |
+          mkdir -p conversion/tools/fbx2gltf
+          curl -L --fail --retry 3 -o /tmp/fbx2gltf.zip \
+            https://github.com/godotengine/FBX2glTF/releases/download/v0.13.1/FBX2glTF-linux-x86_64.zip
+          unzip -q /tmp/fbx2gltf.zip -d conversion/tools/fbx2gltf
+          FBX_BIN="$(find conversion/tools/fbx2gltf -type f \( -name 'FBX2glTF-linux-x86_64' -o -name 'FBX2glTF' \) | head -1)"
+          test -n "$FBX_BIN"
+          chmod +x "$FBX_BIN"
+          echo "FBX2GLTF_PATH=$(realpath "$FBX_BIN")" >> "$GITHUB_ENV"
+      - name: Select reconstructed Unity Assets tree
+        run: |
+          SOURCE_ASSETS="$(find conversion/assetripper -type d -name Assets -print -quit)"
+          test -n "$SOURCE_ASSETS"
+          mkdir -p conversion/UnitySource
+          rsync -a --delete "$SOURCE_ASSETS/" conversion/UnitySource/Assets/
+      - name: Prepare Unidot project
+        run: |
+          git clone --depth 1 https://github.com/V-Sekai/unidot_importer.git conversion/addons/unidot_importer
+          cat > conversion/project.godot <<'EOF'
+          config_version=5
+          [application]
+          config/name="Granny Conversion Bench - AssetRipper then Unidot"
+          config/features=PackedStringArray("4.2", "GL Compatibility")
+          [editor_plugins]
+          enabled=PackedStringArray("res://addons/unidot_importer/plugin.cfg")
+          [rendering]
+          renderer/rendering_method="gl_compatibility"
+          renderer/rendering_method.mobile="gl_compatibility"
+          EOF
+          cp ci/godot/unidot_headless.gd conversion/ci_unidot_headless.gd
+      - name: Run Unidot on AssetRipper output
+        working-directory: conversion
+        env:
+          FBX2GLTF_PATH: ${{ env.FBX2GLTF_PATH }}
+        run: godot-convert --headless --editor --path . --script ci_unidot_headless.gd
+      - name: Upgrade with final Godot
+        working-directory: conversion
+        run: godot --headless --editor --path . --quit-after 20
+      - name: Package AssetRipper -> Unidot result and source
+        run: |
+          rm -rf conversion/.godot conversion/tools/fbx2gltf
+          tar -czf /tmp/granny-assetripper-unidot.tar.gz -C conversion .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conversion-assetripper-unidot
+          path: /tmp/granny-assetripper-unidot.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  unitypy-baseline:
+    name: UnityPy raw asset baseline
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    needs: audit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Install UnityPy
+        run: python3 -m pip install --upgrade pip UnityPy Pillow
+      - name: Extract meshes and textures
+        run: python3 ci/conversion/unitypy_extract.py --input Assets --output conversion/unitypy
+      - name: Package UnityPy baseline
+        run: tar -czf /tmp/granny-unitypy-baseline.tar.gz -C conversion unitypy
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conversion-unitypy-baseline
+          path: /tmp/granny-unitypy-baseline.tar.gz
+          if-no-files-found: error
+          retention-days: 14
