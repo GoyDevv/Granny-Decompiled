@@ -2,7 +2,7 @@ name: Unity -> Godot 4.7
 
 on:
   push:
-    branches: [master]
+    branches: [master, 'ci/**']
     paths:
       - 'Assets/**'
       - 'ProjectSettings/**'
@@ -17,7 +17,7 @@ permissions:
 jobs:
   convert:
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       GODOT_CONVERT_VERSION: 4.2.2
       GODOT_FINAL_VERSION: 4.7.2
@@ -29,6 +29,19 @@ jobs:
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y unzip rsync
+
+      - name: Audit Unity GUID dependencies
+        run: |
+          mkdir -p conversion/audit
+          python3 ci/conversion/audit_unity_refs.py --assets Assets --out conversion/audit || true
+
+      - name: Upload Unity source audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: granny-unity-guid-audit
+          path: conversion/audit
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Download Godot 4.2.2 for Unidot
         run: |
@@ -52,7 +65,7 @@ jobs:
           curl -L --fail --retry 3 -o /tmp/fbx2gltf.zip \
             https://github.com/godotengine/FBX2glTF/releases/download/v0.13.1/FBX2glTF-linux-x86_64.zip
           unzip -q /tmp/fbx2gltf.zip -d conversion/tools/fbx2gltf
-          FBX_BIN="$(find conversion/tools/fbx2gltf -type f -name 'FBX2glTF-linux-x86_64' -o -name 'FBX2glTF' | head -1)"
+          FBX_BIN="$(find conversion/tools/fbx2gltf -type f \( -name 'FBX2glTF-linux-x86_64' -o -name 'FBX2glTF' \) | head -1)"
           test -n "$FBX_BIN"
           chmod +x "$FBX_BIN"
           echo "FBX2GLTF_PATH=$(realpath "$FBX_BIN")" >> "$GITHUB_ENV"
@@ -84,7 +97,7 @@ jobs:
           EOF
           cp ci/godot/unidot_headless.gd conversion/ci_unidot_headless.gd
 
-      - name: Convert Unity assets with Unidot
+      - name: Convert Unity assets with hardened Unidot importer
         working-directory: conversion
         env:
           FBX2GLTF_PATH: ${{ env.FBX2GLTF_PATH }}
@@ -93,14 +106,18 @@ jobs:
 
       - name: Select converted gameplay scene
         run: |
-          SCENE="$(find conversion -type f -path '*Scene.tscn' | grep -E '/Scene/1_Scenes/Scene\.tscn$' | head -1 || true)"
+          SCENE="$(find conversion -type f -path '*Scene/1_Scenes/Scene.tscn' | head -1 || true)"
           if [ -z "$SCENE" ]; then
             SCENE="$(find conversion -type f -name 'Scene.tscn' | head -1 || true)"
           fi
           test -n "$SCENE"
           REL="${SCENE#conversion/}"
           echo "Converted scene: $REL"
-          sed -i "s#^run/main_scene=.*#run/main_scene=\"res://$REL\"#" conversion/project.godot || true
+          if grep -q '^run/main_scene=' conversion/project.godot; then
+            sed -i "s#^run/main_scene=.*#run/main_scene=\"res://$REL\"#" conversion/project.godot
+          else
+            printf '\n[application]\nrun/main_scene="res://%s"\n' "$REL" >> conversion/project.godot
+          fi
 
       - name: Let Godot 4.7.2 open and upgrade the converted project
         working-directory: conversion
@@ -112,11 +129,11 @@ jobs:
           cat > conversion/GODOT_MIGRATION.md <<'EOF'
           # Granny -> Godot 4.7 migration
 
-          This project was translated from the decompiled Unity source with Unidot, then opened with Godot 4.7.2.
+          This project was translated from the decompiled Unity source with Unidot  and the hardened headless importer, then opened with Godot 4.7.2.
 
-          Unidot translates Unity asset formats and scene structure into native Godot resources. Unity gameplay scripts/shaders may still require manual porting, as documented by the Unidot project.
+          The CI importer explicitly waits for Godot filesystem scans before and after Unidot conversion and records a Unity GUID dependency audit.
 
-          Main gameplay scene is the converted `Scene.unity` scene, now a `.tscn`.
+          Unidot still cannot port Unity gameplay scripts/shaders automatically. The goal of this artifact is an accurate scene/asset foundation for the Godot rework.
           EOF
 
       - name: Package converted Godot project
