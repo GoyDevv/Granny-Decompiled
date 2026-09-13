@@ -113,11 +113,22 @@ jobs:
           test -n "$SCENE"
           REL="${SCENE#conversion/}"
           echo "Converted scene: $REL"
-          if grep -q '^run/main_scene=' conversion/project.godot; then
-            sed -i "s#^run/main_scene=.*#run/main_scene=\"res://$REL\"#" conversion/project.godot
-          else
-            printf '\n[application]\nrun/main_scene="res://%s"\n' "$REL" >> conversion/project.godot
-          fi
+          python3 - "$REL" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path("conversion/project.godot")
+          text = p.read_text(encoding="utf-8")
+          scene = sys.argv[1]
+          if "run/main_scene=" in text:
+              lines = [
+                  f'run/main_scene="res://{scene}"' if line.startswith("run/main_scene=") else line
+                  for line in text.splitlines()
+              ]
+              text = "\n".join(lines) + "\n"
+          else:
+              text = text.replace("[application]\n", f"[application]\nrun/main_scene=\"res://{scene}\"\n", 1)
+          p.write_text(text, encoding="utf-8")
+          PY
 
       - name: Let Godot 4.7.2 open and upgrade the converted project
         working-directory: conversion
@@ -129,7 +140,7 @@ jobs:
           cat > conversion/GODOT_MIGRATION.md <<'EOF'
           # Granny -> Godot 4.7 migration
 
-          This project was translated from the decompiled Unity source with Unidot  and the hardened headless importer, then opened with Godot 4.7.2.
+          This project was translated from the decompiled Unity source with Unidot and the hardened headless importer, then opened with Godot 4.7.2.
 
           The CI importer explicitly waits for Godot filesystem scans before and after Unidot conversion and records a Unity GUID dependency audit.
 
