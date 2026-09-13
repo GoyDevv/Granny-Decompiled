@@ -1,0 +1,248 @@
+name: Convert Unity project and build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - 'ci/**'
+    paths:
+      - 'Assets/**'
+      - 'ProjectSettings/**'
+      - 'Packages/**'
+      - 'ci/**'
+      - '.github/workflows/android-build.yml'
+  pull_request:
+    paths:
+      - 'Assets/**'
+      - 'ProjectSettings/**'
+      - 'Packages/**'
+      - 'ci/**'
+      - '.github/workflows/android-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Unidot -> Godot -> Android APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      GODOT_VERSION: 4.7.2
+      GODOT_CONVERT_VERSION: 4.2.2
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install host dependencies
+        run: sudo apt-get update && sudo apt-get install -y unzip rsync
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            'platform-tools' \
+            'cmdline-tools;latest' \
+            'platforms;android-35' \
+            'build-tools;35.0.1' \
+            'cmake;3.10.2.4988404' \
+            'ndk;28.1.13356709'
+
+      - name: Download Godot conversion editor
+        run: |
+          curl -L --fail --retry 3 -o /tmp/godot-convert.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_CONVERT_VERSION}-stable/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot-convert.zip -d /opt/godot-convert
+          chmod +x /opt/godot-convert/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64
+          ln -sf /opt/godot-convert/Godot_v${GODOT_CONVERT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot-convert
+
+      - name: Download Godot final editor
+        run: |
+          curl -L --fail --retry 3 -o /tmp/godot-final.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot-final.zip -d /opt/godot-final
+          chmod +x /opt/godot-final/Godot_v${GODOT_VERSION}-stable_linux.x86_64
+          ln -sf /opt/godot-final/Godot_v${GODOT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot
+
+      - name: Download FBX2glTF
+        run: |
+          mkdir -p conversion/tools/fbx2gltf
+          curl -L --fail --retry 3 -o /tmp/fbx2gltf.zip \
+            https://github.com/godotengine/FBX2glTF/releases/download/v0.13.1/FBX2glTF-linux-x86_64.zip
+          unzip -q /tmp/fbx2gltf.zip -d conversion/tools/fbx2gltf
+          FBX_BIN="$(find conversion/tools/fbx2gltf -type f \( -name 'FBX2glTF-linux-x86_64' -o -name 'FBX2glTF' \) | head -1)"
+          test -n "$FBX_BIN"
+          chmod +x "$FBX_BIN"
+          echo "FBX2GLTF_PATH=$(realpath "$FBX_BIN")" >> "$GITHUB_ENV"
+
+      - name: Download Android export templates
+        run: |
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          curl -L --fail --retry 3 \
+            -o /tmp/godot-templates.tpz \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          rm -rf /tmp/godot-templates
+          mkdir -p /tmp/godot-templates
+          unzip -q /tmp/godot-templates.tpz -d /tmp/godot-templates
+          cp -a /tmp/godot-templates/templates/. "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+          test -f "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_debug.apk"
+          test -f "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_release.apk"
+
+      - name: Configure Godot Android editor settings
+        run: |
+          mkdir -p "$HOME/.config/godot" "$HOME/.android"
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore "$HOME/.android/debug.keystore" \
+              -alias androiddebugkey \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname 'CN=Android Debug,O=Android,C=US'
+          fi
+          cat > "$HOME/.config/godot/editor_settings-4.7.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/debug_keystore = "$HOME/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+
+      - name: Prepare Unidot project
+        run: |
+          mkdir -p conversion/UnitySource
+          rsync -a --delete Assets/ conversion/UnitySource/Assets/
+          git clone --depth 1 https://github.com/V-Sekai/unidot_importer.git conversion/addons/unidot_importer
+          cat > conversion/project.godot <<'EOF'
+          config_version=5
+
+          [application]
+          config/name="Granny Decompiled"
+          config/features=PackedStringArray("4.2", "GL Compatibility")
+
+          [editor_plugins]
+          enabled=PackedStringArray("res://addons/unidot_importer/plugin.cfg")
+
+          [rendering]
+          renderer/rendering_method="gl_compatibility"
+          renderer/rendering_method.mobile="gl_compatibility"
+          EOF
+          cp ci/godot/unidot_headless.gd conversion/ci_unidot_headless.gd
+
+      - name: Run Unidot conversion
+        working-directory: conversion
+        env:
+          FBX2GLTF_PATH: ${{ env.FBX2GLTF_PATH }}
+        run: godot-convert --headless --editor --path . --script ci_unidot_headless.gd
+
+      - name: Upgrade converted project with final Godot
+        working-directory: conversion
+        run: godot --headless --editor --path . --quit-after 20
+
+      - name: Configure Android export preset
+        working-directory: conversion
+        shell: bash
+        run: |
+          MAIN_SCENE="$(find . -type f -name '*.tscn' -not -path './addons/*' | grep -Ei '(main|game|scene|level|granny)' | head -1 || true)"
+          if [ -z "$MAIN_SCENE" ]; then
+            MAIN_SCENE="$(find . -type f -name '*.tscn' -not -path './addons/*' | head -1 || true)"
+          fi
+
+          {
+            echo '[preset.0]'
+            echo
+            echo 'name="Android"'
+            echo 'platform="Android"'
+            echo 'runnable=true'
+            echo 'dedicated_server=false'
+            echo 'custom_features=""'
+            echo 'export_filter="all_resources"'
+            echo 'include_filter=""'
+            echo 'exclude_filter=""'
+            echo 'export_path=""'
+            echo 'encryption_include_filters=""'
+            echo 'encryption_exclude_filters=""'
+            echo 'seed=0'
+            echo 'encrypt_pck=false'
+            echo 'encrypt_directory=false'
+            echo 'script_export_mode=2'
+            echo
+            echo '[preset.0.options]'
+            echo
+            echo 'custom_template/debug=""'
+            echo 'custom_template/release=""'
+            echo 'gradle_build/use_gradle_build=false'
+            echo 'architectures/armeabi-v7a=false'
+            echo 'architectures/arm64-v8a=true'
+            echo 'architectures/x86=false'
+            echo 'architectures/x86_64=false'
+            echo 'version/code=1'
+            echo 'version/name="1.0"'
+            echo 'package/unique_name="com.goydevv.grannydecompiled"'
+            echo 'package/name="Granny Decompiled"'
+            echo 'package/signed=true'
+            echo 'package/app_category=0'
+            echo 'package/retain_data_on_uninstall=false'
+            echo 'package/exclude_from_recents=false'
+            echo 'package/show_in_app_library=true'
+            echo 'package/show_as_launcher_app=true'
+            echo 'graphics/opengl_debug=false'
+            echo 'xr_features/xr_mode=0'
+            echo 'screen/immersive_mode=true'
+            echo 'screen/support_small=true'
+            echo 'screen/support_normal=true'
+            echo 'screen/support_large=true'
+            echo 'screen/support_xlarge=true'
+          } > export_presets.cfg
+
+          if [ -n "$MAIN_SCENE" ]; then
+            printf '\n[application]\nrun/main_scene="res://%s"\n' "${MAIN_SCENE#./}" >> project.godot
+            echo "Selected main scene: $MAIN_SCENE"
+          else
+            echo 'No converted .tscn scene found; APK will still be exported for asset validation.'
+          fi
+
+      - name: Import final Godot project
+        working-directory: conversion
+        run: godot --headless --editor --path . --quit-after 30
+
+      - name: Build debug APK
+        working-directory: conversion
+        run: |
+          mkdir -p ../artifacts
+          godot --headless --path . --export-debug Android ../artifacts/granny-decompiled-debug.apk
+          test -s ../artifacts/granny-decompiled-debug.apk
+
+      - name: Package converted project
+        run: |
+          rm -rf conversion/.godot conversion/tools/fbx2gltf
+          tar -czf artifacts/granny-decompiled-godot-project.tar.gz -C conversion .
+
+      - name: Upload APK and converted project
+        uses: actions/upload-artifact@v4
+        with:
+          name: granny-android-build
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
