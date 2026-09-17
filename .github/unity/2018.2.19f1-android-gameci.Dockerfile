@@ -2,10 +2,9 @@ FROM unityci/editor:ubuntu-2018.2.19f1-android-3
 
 SHELL ["/bin/bash", "-lc"]
 
-# Unity 2018.2's published GameCI image contains the Unity Android module,
-# but its legacy SDK layout does not provide sdkmanager in a location that
-# the current game-ci/unity-builder@v4 Android entrypoint can discover.
-# Install the legacy Android SDK tools and the matching 2018-era NDK/build tools.
+# Unity 2018.2 predates Unity's bundled OpenJDK. The published GameCI image
+# also lacks the legacy sdkmanager layout expected by unity-builder@v4.
+# Install Java 8 plus the Android SDK/NDK toolchain used by this editor.
 ENV UNITY_PATH=/opt/unity \
     ANDROID_INSTALL_LOCATION=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer \
     ANDROID_SDK_ROOT=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK \
@@ -13,13 +12,17 @@ ENV UNITY_PATH=/opt/unity \
     ANDROID_NDK_VERSION=16.1.4479499 \
     ANDROID_NDK_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/ndk/16.1.4479499 \
     ANDROID_BUILD_TOOLS_VERSION=28.0.3 \
-    JAVA_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/Tools/OpenJDK/Linux
+    JAVA_HOME=/opt/jdk8
 
 ENV PATH=${JAVA_HOME}/bin:${ANDROID_HOME}/tools:${ANDROID_HOME}/tools/bin:${ANDROID_HOME}/platform-tools:${PATH}
 
 RUN set -euxo pipefail; \
     test -x "${UNITY_PATH}/Editor/Unity"; \
-    test -d "${JAVA_HOME}"; \
+    mkdir -p /opt/jdk8; \
+    wget -q https://api.adoptium.net/v3/binary/latest/8/ga/linux/x64/jdk/hotspot/normal/eclipse -O /tmp/jdk8.tar.gz; \
+    tar -xzf /tmp/jdk8.tar.gz --strip-components=1 -C /opt/jdk8; \
+    test -x "${JAVA_HOME}/bin/java"; \
+    java -version 2>&1 | head -n 1; \
     mkdir -p "${ANDROID_HOME}"; \
     chmod -R 777 "${ANDROID_INSTALL_LOCATION}"; \
     wget -q https://dl.google.com/android/repository/sdk-tools-linux-4333796.zip -O /tmp/android-sdk.zip; \
@@ -31,12 +34,13 @@ RUN set -euxo pipefail; \
       "ndk;${ANDROID_NDK_VERSION}"; \
     yes | "${ANDROID_HOME}/tools/bin/sdkmanager" --licenses; \
     mkdir -p /usr/bin/unity-editor.d; \
-    cat > /usr/bin/unity-editor.d/android-2018.2.sh <<'EOF'\nexport ANDROID_INSTALL_LOCATION=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer\nexport ANDROID_SDK_ROOT=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK\nexport ANDROID_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK\nexport ANDROID_NDK_VERSION=16.1.4479499\nexport ANDROID_NDK_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/ndk/16.1.4479499\nexport ANDROID_BUILD_TOOLS_VERSION=28.0.3\nexport JAVA_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/Tools/OpenJDK/Linux\nexport PATH=${JAVA_HOME}/bin:${ANDROID_HOME}/tools:${ANDROID_HOME}/tools/bin:${ANDROID_HOME}/platform-tools:${PATH}\nEOF\n    chmod 644 /usr/bin/unity-editor.d/android-2018.2.sh; \
+    cat > /usr/bin/unity-editor.d/android-2018.2.sh <<'EOF'\nexport ANDROID_INSTALL_LOCATION=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer\nexport ANDROID_SDK_ROOT=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK\nexport ANDROID_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK\nexport ANDROID_NDK_VERSION=16.1.4479499\nexport ANDROID_NDK_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/ndk/16.1.4479499\nexport ANDROID_BUILD_TOOLS_VERSION=28.0.3\nexport JAVA_HOME=/opt/jdk8\nexport PATH=${JAVA_HOME}/bin:${ANDROID_HOME}/tools:${ANDROID_HOME}/tools/bin:${ANDROID_HOME}/platform-tools:${PATH}\nEOF\n    chmod 644 /usr/bin/unity-editor.d/android-2018.2.sh; \
     echo '. /usr/bin/unity-editor.d/android-2018.2.sh' >> /root/.bashrc; \
-    rm -f /tmp/android-sdk.zip; \
+    rm -f /tmp/jdk8.tar.gz /tmp/android-sdk.zip; \
+    test -x "${JAVA_HOME}/bin/java"; \
     test -x "${ANDROID_HOME}/tools/bin/sdkmanager"; \
     test -d "${ANDROID_NDK_HOME}"; \
     test -d "${ANDROID_HOME}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}"; \
     test -d "${ANDROID_HOME}/platforms/android-27"; \
     "${ANDROID_HOME}/tools/bin/sdkmanager" --list >/dev/null; \
-    echo "Unity 2018.2 Android SDK configured at ${ANDROID_HOME}"
+    echo "Unity 2018.2 Android toolchain configured successfully"
