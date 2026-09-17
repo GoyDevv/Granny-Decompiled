@@ -56,6 +56,11 @@ jobs:
           buildName: Granny-Forsaken
           customParameters: '-quit -batchmode'
 
+      - name: Verify APK exists
+        run: |
+          find build -type f -name '*.apk' -print
+          test -n "$(find build -type f -name '*.apk' -print -quit)"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -63,3 +68,5 @@ jobs:
           path: build/Android/**/*.apk
           if-no-files-found: error
           retention-days: 14
+
+# CI retrigger: Unity Personal license secret is configured.
