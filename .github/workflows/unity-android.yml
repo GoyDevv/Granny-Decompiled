@@ -18,7 +18,7 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Checkout Unity project
         uses: actions/checkout@v4
@@ -47,9 +47,20 @@ jobs:
       - name: Build Unity 2018.2 Android compatibility image
         run: |
           docker build \
+            --progress=plain \
             --file .github/unity/2018.2.19f1-android-gameci.Dockerfile \
             --tag granny-unityci:2018.2.19f1-android-3 \
             .
+
+      - name: Verify Unity Android compatibility image
+        run: |
+          docker run --rm granny-unityci:2018.2.19f1-android-3 bash -lc '\
+            source /usr/bin/unity-editor.d/android-2018.2.sh && \
+            test -x "$ANDROID_HOME/tools/bin/sdkmanager" && \
+            test -d "$ANDROID_HOME/platforms/android-27" && \
+            test -d "$ANDROID_NDK_HOME" && \
+            test -d "$ANDROID_HOME/build-tools/28.0.3" && \
+            "$ANDROID_HOME/tools/bin/sdkmanager" --version'
 
       - name: Build Android APK with GameCI
         uses: game-ci/unity-builder@v4
@@ -57,12 +68,17 @@ jobs:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          # Unity 2018.2 serializes Automatic as 0. GameCI's Android
+          # entrypoint would otherwise try to install the nonexistent
+          # platforms;android-0 package. Pin the compatible API explicitly.
+          ANDROID_SDK_MANAGER_PARAMETERS: platforms;android-27
         with:
           targetPlatform: Android
-          unityVersion: auto
+          unityVersion: 2018.2.19f1
           customImage: granny-unityci:2018.2.19f1-android-3
           androidExportType: androidPackage
           buildName: Granny-Forsaken
+          androidSymbolType: none
           customParameters: '-quit -batchmode'
 
       - name: Verify APK exists
@@ -78,4 +94,4 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-# CI fix: Unity 2018.2 image needs GameCI v4 editor metadata for Android SDK discovery.
+# CI fix: Unity 2018.2 needs a legacy SDK layer plus an explicit Android API 27 target for GameCI v4.
