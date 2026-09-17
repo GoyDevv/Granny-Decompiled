@@ -34,7 +34,17 @@ RUN set -euxo pipefail; \
       "ndk;${ANDROID_NDK_VERSION}"; \
     yes | "${ANDROID_HOME}/tools/bin/sdkmanager" --licenses; \
     mkdir -p /usr/bin/unity-editor.d; \
-    cat > /usr/bin/unity-editor.d/android-2018.2.sh <<'EOF'\nexport ANDROID_INSTALL_LOCATION=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer\nexport ANDROID_SDK_ROOT=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK\nexport ANDROID_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK\nexport ANDROID_NDK_VERSION=16.1.4479499\nexport ANDROID_NDK_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/ndk/16.1.4479499\nexport ANDROID_BUILD_TOOLS_VERSION=28.0.3\nexport JAVA_HOME=/opt/jdk8\nexport PATH=${JAVA_HOME}/bin:${ANDROID_HOME}/tools:${ANDROID_HOME}/tools/bin:${ANDROID_HOME}/platform-tools:${PATH}\nEOF\n    chmod 644 /usr/bin/unity-editor.d/android-2018.2.sh; \
+    printf '%s\n' \
+      'export ANDROID_INSTALL_LOCATION=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer' \
+      'export ANDROID_SDK_ROOT=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK' \
+      'export ANDROID_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK' \
+      'export ANDROID_NDK_VERSION=16.1.4479499' \
+      'export ANDROID_NDK_HOME=/opt/unity/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/ndk/16.1.4479499' \
+      'export ANDROID_BUILD_TOOLS_VERSION=28.0.3' \
+      'export JAVA_HOME=/opt/jdk8' \
+      'export PATH=${JAVA_HOME}/bin:${ANDROID_HOME}/tools:${ANDROID_HOME}/tools/bin:${ANDROID_HOME}/platform-tools:${PATH}' \
+      > /usr/bin/unity-editor.d/android-2018.2.sh; \
+    chmod 644 /usr/bin/unity-editor.d/android-2018.2.sh; \
     echo '. /usr/bin/unity-editor.d/android-2018.2.sh' >> /root/.bashrc; \
     rm -f /tmp/jdk8.tar.gz /tmp/android-sdk.zip; \
     test -x "${JAVA_HOME}/bin/java"; \
