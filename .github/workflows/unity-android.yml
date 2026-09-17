@@ -9,6 +9,7 @@ on:
       - 'Packages/**'
       - 'ProjectSettings/ProjectVersion.txt'
       - '.github/workflows/unity-android.yml'
+      - '.github/unity/2018.2.19f1-android-gameci.Dockerfile'
   workflow_dispatch:
 
 permissions:
@@ -43,6 +44,13 @@ jobs:
             Unity-Library-Android-
             Unity-Library-
 
+      - name: Build Unity 2018.2 Android compatibility image
+        run: |
+          docker build \
+            --file .github/unity/2018.2.19f1-android-gameci.Dockerfile \
+            --tag granny-unityci:2018.2.19f1-android-3 \
+            .
+
       - name: Build Android APK with GameCI
         uses: game-ci/unity-builder@v4
         env:
@@ -52,6 +60,7 @@ jobs:
         with:
           targetPlatform: Android
           unityVersion: auto
+          customImage: granny-unityci:2018.2.19f1-android-3
           androidExportType: androidPackage
           buildName: Granny-Forsaken
           customParameters: '-quit -batchmode'
@@ -69,4 +78,4 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-# CI retrigger: Unity Personal license secret is configured.
+# CI fix: Unity 2018.2 image needs GameCI v4 editor metadata for Android SDK discovery.
