@@ -95,3 +95,4 @@ jobs:
           retention-days: 14
 
 # CI fix: Unity 2018.2 needs a legacy SDK layer plus an explicit Android API 27 target for GameCI v4.
+# CI retrigger: run the corrected compatibility image from the clean master state.
